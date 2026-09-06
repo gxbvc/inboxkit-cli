@@ -1,0 +1,525 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# inboxkit-cli — terminal access to InboxKit (app.inboxkit.com): account, workspaces, domains, mailboxes
+# Credentials: env INBOXKIT_API_KEY (wins) or ~/.config/inboxkit/.env  (KEY=VALUE lines)
+# Default workspace: env INBOXKIT_WORKSPACE_UID or the same .env file; override with --workspace UID
+
+require 'net/http'
+require 'json'
+require 'optparse'
+require 'uri'
+
+ENV_PATH = File.expand_path('~/.config/inboxkit/.env')
+API_URL = 'https://api.inboxkit.com'
+VERSION = '1.0.0'
+
+COMMAND_HELP = {
+  'account' => 'Usage: inboxkit-cli account [--format json]',
+  'workspaces' => 'Usage: inboxkit-cli workspaces list|show|create ...',
+  'domains' => 'Usage: inboxkit-cli domains list [--workspace UID] [--page N] [--limit N] [--format json]',
+  'mailboxes' => 'Usage: inboxkit-cli mailboxes list [--workspace UID] [--page N] [--limit N] [--format json]',
+  'raw' => 'Usage: inboxkit-cli raw METHOD PATH [--data JSON] [--query k=v ...] [--workspace UID]'
+}.freeze
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+def load_dotenv(path)
+  return {} unless File.exist?(path)
+
+  File.readlines(path).each_with_object({}) do |line, h|
+    line = line.strip
+    next if line.empty? || line.start_with?('#')
+
+    key, val = line.split('=', 2)
+    h[key.strip] = val.to_s.strip if key
+  end
+end
+
+def load_config
+  file = load_dotenv(ENV_PATH)
+  key = ENV['INBOXKIT_API_KEY'] || file['INBOXKIT_API_KEY']
+  workspace = ENV['INBOXKIT_WORKSPACE_UID'] || file['INBOXKIT_WORKSPACE_UID']
+  { key: key, workspace: workspace }
+end
+
+def require_key!(cfg)
+  return if cfg[:key] && !cfg[:key].to_s.empty?
+
+  warn "Error: No API key configured. Set INBOXKIT_API_KEY or write #{ENV_PATH}"
+  exit 2
+end
+
+def require_workspace!(workspace)
+  return workspace if workspace && !workspace.to_s.empty?
+
+  warn "Error: No workspace set. Pass --workspace UID or set INBOXKIT_WORKSPACE_UID in #{ENV_PATH}"
+  exit 2
+end
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+def make_http(uri)
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = (uri.scheme == 'https')
+  http.open_timeout = 10
+  http.read_timeout = 30
+  http
+end
+
+def api_req(method, path, cfg, body: nil, params: nil, workspace: nil)
+  uri = URI("#{API_URL}#{path}")
+  uri.query = URI.encode_www_form(params) if params && !params.empty?
+
+  http = make_http(uri)
+
+  req = case method.to_s.downcase
+        when 'get'    then Net::HTTP::Get.new(uri)
+        when 'post'   then Net::HTTP::Post.new(uri)
+        when 'patch'  then Net::HTTP::Patch.new(uri)
+        when 'put'    then Net::HTTP::Put.new(uri)
+        when 'delete' then Net::HTTP::Delete.new(uri)
+        else raise "Unknown method: #{method}"
+        end
+
+  req['Authorization'] = "Bearer #{cfg[:key]}"
+  req['Content-Type'] = 'application/json'
+  req['Accept'] = 'application/json'
+  req['X-Workspace-Id'] = workspace if workspace
+  req.body = body.to_json if body
+
+  http.request(req)
+rescue Errno::ECONNREFUSED => e
+  warn "Error: Cannot connect to #{API_URL} — #{e.message}"
+  exit 1
+rescue StandardError => e
+  warn "Error: #{e.message}"
+  exit 1
+end
+
+def api_json(method, path, cfg, body: nil, params: nil, workspace: nil)
+  resp = api_req(method, path, cfg, body: body, params: params, workspace: workspace)
+  code = resp.code.to_i
+
+  parsed = begin
+    JSON.parse(resp.body.to_s)
+  rescue StandardError
+    { 'message' => resp.body.to_s.strip }
+  end
+
+  case code
+  when 200..299
+    parsed
+  when 401
+    warn 'Error: 401 Unauthorized — check your INBOXKIT_API_KEY'
+    exit 1
+  when 403
+    warn "Error: 403 Forbidden — #{parsed['message'] || 'this key cannot perform that action'}"
+    exit 1
+  when 404
+    warn "Error: 404 Not found — #{parsed['message'] || path}"
+    exit 1
+  else
+    msg = parsed.is_a?(Hash) ? (parsed['message'] || parsed.to_json) : parsed.to_s
+    warn "Error: #{msg} (#{code})"
+    exit 1
+  end
+end
+
+# ---------------------------------------------------------------------------
+# Formatters
+# ---------------------------------------------------------------------------
+
+def terminal_width
+  cols = ENV['COLUMNS']
+  return cols.to_i if cols && cols.to_i.positive?
+
+  begin
+    require 'io/console'
+    w = IO.console&.winsize&.last
+    return w if w && w.positive?
+  rescue StandardError
+    nil
+  end
+
+  100
+end
+
+def truncate(str, width)
+  s = str.to_s
+  return s if width <= 0 || s.length <= width
+  return s[0, width] if width <= 1
+
+  "#{s[0, width - 1]}…"
+end
+
+# Renders a table. If flex_key is given, that column absorbs whatever width is
+# left after the fixed columns and the terminal width, truncating with an
+# ellipsis rather than wrapping. Returns false for empty rows so callers can
+# print a friendly "(none)" message instead.
+def render_table(rows, cols, flex_key: nil)
+  return false if rows.empty?
+
+  fixed_cols = flex_key ? cols.reject { |c| c[:key] == flex_key } : cols
+  fixed_width = fixed_cols.sum { |c| [c[:label].length, *rows.map { |r| r[c[:key]].to_s.length }].max }
+  fixed_width += (cols.length - 1) * 2
+
+  widths = cols.map do |c|
+    if flex_key && c[:key] == flex_key
+      [terminal_width - fixed_width, 10].max
+    else
+      [c[:label].length, *rows.map { |r| r[c[:key]].to_s.length }].max
+    end
+  end
+
+  puts cols.each_with_index.map { |c, i| c[:label].ljust(widths[i]) }.join('  ')
+  puts widths.map { |w| '-' * w }.join('  ')
+
+  rows.each do |r|
+    puts cols.each_with_index.map { |c, i|
+      val = r[c[:key]].to_s
+      val = truncate(val, widths[i]) if flex_key && c[:key] == flex_key
+      c[:align] == :right ? val.rjust(widths[i]) : val.ljust(widths[i])
+    }.join('  ')
+  end
+
+  true
+end
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_account(args, cfg)
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  data = api_json(:get, '/v1/api/account', cfg)
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  puts "Team:       #{data['team']}  (#{data['uid']})"
+  puts "Admin:      #{data['admin_email']}"
+  puts "Credits:    #{data['credits_remaining']} remaining / #{data['total_credits']} total (#{data['credits_used']} used)"
+  puts "Plan:       #{data['current_plan'] || '(none)'}"
+  puts "Mailbox slots (google):     #{data['subscription_mailbox_slots_google_remaining']}/#{data['subscription_mailbox_slots_google']}"
+  puts "Mailbox slots (ms outlook): #{data['subscription_mailbox_slots_ms_outlook_remaining']}/#{data['subscription_mailbox_slots_ms_outlook']}"
+  puts "Auto top-up: #{data['auto_topup_enabled'] ? 'on' : 'off'}"
+end
+
+def cmd_workspaces_list(args, cfg)
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  data = api_json(:get, '/v1/api/workspaces/list', cfg)
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  workspaces = data['workspaces'] || []
+  if workspaces.empty?
+    puts '(no workspaces)'
+    return
+  end
+
+  rows = workspaces.map do |w|
+    { uid: w['uid'], name: w['name'], domains: w['domains'], type: w['workspace_type'] }
+  end
+
+  render_table(rows, [
+    { key: :uid, label: 'UID' },
+    { key: :name, label: 'NAME' },
+    { key: :domains, label: 'DOMAINS', align: :right },
+    { key: :type, label: 'TYPE' }
+  ])
+end
+
+def cmd_workspaces_show(args, cfg)
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  uid = args.shift
+  unless uid
+    warn 'Usage: inboxkit-cli workspaces show UID [--format json]'
+    exit 2
+  end
+
+  data = api_json(:get, '/v1/api/workspaces/details', cfg, params: { uid: uid })
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  w = data['workspace'] || data
+  puts "Name:        #{w['name']}"
+  puts "UID:         #{w['uid']}"
+  puts "Type:        #{w['workspace_type']}"
+  puts "Domains:     #{w['domains']} (#{w['assigned_domains']} assigned, #{w['assignable_domains']} assignable)"
+  puts "Webhook:     #{w['webhook_url']}" unless w['webhook_url'].to_s.empty?
+  members = w['members'] || []
+  unless members.empty?
+    puts ''
+    puts 'Members:'
+    members.each { |m| puts "  #{m['email']}  (#{m['role']})" }
+  end
+end
+
+def cmd_workspaces_create(args, cfg)
+  opts = { admins_only: false }
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--name NAME') { |v| opts[:name] = v }
+    o.on('--webhook URL') { |v| opts[:webhook] = v }
+    o.on('--admins-only') { opts[:admins_only] = true }
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  unless opts[:name]
+    warn 'Usage: inboxkit-cli workspaces create --name NAME [--webhook URL] [--admins-only]'
+    exit 2
+  end
+
+  body = { name: opts[:name], admins_only: opts[:admins_only] }
+  body[:webhook_url] = opts[:webhook] if opts[:webhook]
+
+  data = api_json(:post, '/v1/api/workspaces/create', cfg, body: body)
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  puts "Created workspace #{data['uid']}: #{opts[:name]}"
+end
+
+def cmd_domains_list(args, cfg)
+  opts = { page: 1, limit: 10 }
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--workspace UID') { |v| opts[:workspace] = v }
+    o.on('--page N', Integer) { |v| opts[:page] = v }
+    o.on('--limit N', Integer) { |v| opts[:limit] = v }
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  workspace = require_workspace!(opts[:workspace] || cfg[:workspace])
+
+  data = api_json(:post, '/v1/api/domains/list', cfg,
+                   body: { page: opts[:page], limit: opts[:limit] }, workspace: workspace)
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  domains = data['domains'] || []
+  if domains.empty?
+    puts '(no domains)'
+    return
+  end
+
+  rows = domains.map do |d|
+    { domain: d['domain'] || d['name'], status: d['status'], mailboxes: d['mailboxes'], created: d['created_at'] }
+  end
+
+  render_table(rows, [
+    { key: :domain, label: 'DOMAIN' },
+    { key: :status, label: 'STATUS' },
+    { key: :mailboxes, label: 'MAILBOXES', align: :right },
+    { key: :created, label: 'CREATED' }
+  ])
+
+  puts ''
+  puts "#{data['total']} domain(s) total, page #{data['current_page']}/#{[data['pages'].to_i, 1].max}."
+end
+
+def cmd_mailboxes_list(args, cfg)
+  opts = { page: 1, limit: 10 }
+  fmt = 'table'
+  parser = OptionParser.new do |o|
+    o.on('--workspace UID') { |v| opts[:workspace] = v }
+    o.on('--page N', Integer) { |v| opts[:page] = v }
+    o.on('--limit N', Integer) { |v| opts[:limit] = v }
+    o.on('--format FORMAT') { |v| fmt = v }
+  end
+  parse!(parser, args)
+
+  workspace = require_workspace!(opts[:workspace] || cfg[:workspace])
+
+  data = api_json(:post, '/v1/api/mailboxes/list', cfg,
+                   body: { page: opts[:page], limit: opts[:limit] }, workspace: workspace)
+
+  if fmt == 'json'
+    puts data.to_json
+    return
+  end
+
+  mailboxes = data['mailboxes'] || []
+  if mailboxes.empty?
+    puts '(no mailboxes)'
+    return
+  end
+
+  rows = mailboxes.map do |m|
+    { email: m['email'], domain: m['domain'], platform: m['platform'], status: m['status'] }
+  end
+
+  render_table(rows, [
+    { key: :email, label: 'EMAIL' },
+    { key: :domain, label: 'DOMAIN' },
+    { key: :platform, label: 'PLATFORM' },
+    { key: :status, label: 'STATUS' }
+  ])
+
+  puts ''
+  puts "#{data['total']} mailbox(es) total, page #{data['current_page']}/#{[data['pages'].to_i, 1].max}."
+end
+
+def cmd_raw(args, cfg)
+  opts = { query: {} }
+  parser = OptionParser.new do |o|
+    o.on('--data JSON') { |v| opts[:data] = v }
+    o.on('--query KV') { |v| k, val = v.split('=', 2); opts[:query][k] = val }
+    o.on('--workspace UID') { |v| opts[:workspace] = v }
+  end
+  parse!(parser, args)
+
+  method = args.shift
+  path = args.shift
+  unless method && path
+    warn COMMAND_HELP['raw']
+    exit 2
+  end
+
+  body = if opts[:data]
+           begin
+             JSON.parse(opts[:data])
+           rescue JSON::ParserError => e
+             warn "Error: --data is not valid JSON — #{e.message}"
+             exit 2
+           end
+         end
+
+  workspace = opts[:workspace] || cfg[:workspace]
+
+  data = api_json(method, path, cfg, body: body, params: opts[:query], workspace: workspace)
+  puts data.to_json
+end
+
+def parse!(parser, args)
+  parser.parse!(args)
+rescue OptionParser::ParseError => e
+  warn "Error: #{e.message}"
+  exit 2
+end
+
+def print_help
+  puts <<~HELP
+    inboxkit-cli #{VERSION} — terminal access to InboxKit (app.inboxkit.com)
+
+    Usage:
+      inboxkit-cli account [--format json]
+      inboxkit-cli workspaces list [--format json]
+      inboxkit-cli workspaces show UID [--format json]
+      inboxkit-cli workspaces create --name NAME [--webhook URL] [--admins-only]
+      inboxkit-cli domains list [--workspace UID] [--page N] [--limit N] [--format json]
+      inboxkit-cli mailboxes list [--workspace UID] [--page N] [--limit N] [--format json]
+      inboxkit-cli raw METHOD PATH [--data JSON] [--query k=v ...] [--workspace UID]
+
+    Credentials: env INBOXKIT_API_KEY, else #{ENV_PATH}
+    Default workspace: env INBOXKIT_WORKSPACE_UID, else the same file; override with --workspace UID
+
+    Not implemented (spends money or destroys data — use `raw` if you must):
+      orders, domain registration/renewal, mailbox provisioning, credit purchase, workspace delete/archive.
+  HELP
+end
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if $PROGRAM_NAME == __FILE__
+  command = ARGV.shift
+
+  if command.nil? || %w[--help -h help].include?(command)
+    print_help
+    exit 0
+  end
+
+  if %w[--version -v].include?(command)
+    puts VERSION
+    exit 0
+  end
+
+  if (ARGV.include?('--help') || ARGV.include?('-h')) && COMMAND_HELP.key?(command)
+    puts COMMAND_HELP[command]
+    exit 0
+  end
+
+  cfg = load_config
+  require_key!(cfg)
+
+  case command
+  when 'account' then cmd_account(ARGV, cfg)
+  when 'workspaces'
+    sub = ARGV.shift
+    case sub
+    when 'list' then cmd_workspaces_list(ARGV, cfg)
+    when 'show' then cmd_workspaces_show(ARGV, cfg)
+    when 'create' then cmd_workspaces_create(ARGV, cfg)
+    when nil
+      warn COMMAND_HELP['workspaces']
+      exit 2
+    else
+      warn "Unknown workspaces subcommand: #{sub}. #{COMMAND_HELP['workspaces']}"
+      exit 1
+    end
+  when 'domains'
+    sub = ARGV.shift
+    case sub
+    when 'list' then cmd_domains_list(ARGV, cfg)
+    when nil
+      warn COMMAND_HELP['domains']
+      exit 2
+    else
+      warn "Unknown domains subcommand: #{sub}. #{COMMAND_HELP['domains']}"
+      exit 1
+    end
+  when 'mailboxes'
+    sub = ARGV.shift
+    case sub
+    when 'list' then cmd_mailboxes_list(ARGV, cfg)
+    when nil
+      warn COMMAND_HELP['mailboxes']
+      exit 2
+    else
+      warn "Unknown mailboxes subcommand: #{sub}. #{COMMAND_HELP['mailboxes']}"
+      exit 1
+    end
+  when 'raw' then cmd_raw(ARGV, cfg)
+  else
+    warn "Unknown command: #{command}. Run 'inboxkit-cli --help' for usage."
+    exit 1
+  end
+end

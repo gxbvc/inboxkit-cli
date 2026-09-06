@@ -68,11 +68,13 @@ Quote tools: `cloudflare-cli check`, this file, `inboxkit-cli account`. Do **not
 - Domains = `ceil(mailboxes / names_per_domain)`. Spare warming pool only if he asked.
 - `.com` only. `cloudflare-cli` buys them. InboxKit does **not** register (double-buy).
 
-### One Cloudflare account = one InboxKit workspace
+### One Cloudflare account = one InboxKit workspace (not one zone)
 
-`POST /v1/api/cloudflare-domains/connect` returns **409** if this Cloudflare account is already linked to another workspace. Live: the GXB Cloudflare account is connected to **ASC** (`agsvhq.com`). GXB-workspace connects will 409 until we have a second Cloudflare account or we disconnect ASC (do not disconnect while ASC boxes are provisioning).
+Multiple **zones/domains** in one workspace are fine. What InboxKit forbids is linking **one Cloudflare account to two workspaces** (`ACCOUNT_ALREADY_USED` / 409). Disconnect is refused while any mailbox exists.
 
-**Until then, new lookalikes attach in the ASC workspace**, even if the campaign is GXB/sites. Flag that in the quote. Connect uses the Zone DNS token in `~/.config/inboxkit/cloudflare-dns.env` (not the registrar token). Never print it.
+2026-09-06 we deleted the empty extra workspace and renamed the remaining one **GXB** (`7426e127-ded5-4319-8edb-da9f9556a49e`). That is the only workspace. Tag domains/mailboxes `asc` or `sites` for filtering. Do not create a second workspace. Member access is the only real downside of one bucket (a guest would see every inbox).
+
+Connect uses the Zone DNS token in `~/.config/inboxkit/cloudflare-dns.env` (not the registrar token). **The token must include All zones** (or every new zone). A token scoped to `agsvhq.com` only makes connect say "Domain not found in your Cloudflare zones" even though the zone exists. After buying a domain, wait until it appears in `GET /zones` *and* the token covers it. Never print the token. Cloudflare Registrar **locks nameservers**; do not try InboxKit's own NS as a workaround.
 
 ### Prices (live 2026-09-06; re-check domains)
 
@@ -90,7 +92,7 @@ Domains: K × $10.46 = $YEAR1  (list them, live-checked)
 InboxKit now: M × $3 credits = $NOW
 Monthly: M×$3 boxes + M×$3 warmup = $MO/mo
 Names: first names only from the table; last names = ask if missing
-Workspace: ASC (CF already connected) unless a second CF account exists
+Workspace: GXB `7426e127-ded5-4319-8edb-da9f9556a49e` (only workspace; tag the project)
 Redirect: project URL
 Say yes to this list and I will buy.
 ```
@@ -100,12 +102,12 @@ Example 2500/day, 3 names: 100 boxes, 34 domains, ~$356 year-1 + $300 credits + 
 
 ### Names — do not invent
 
-| Project | Workspace UID | First names | Redirect |
+| Project | Tag | First / last | Redirect |
 |---|---|---|---|
-| ASC | `7426e127-ded5-4319-8edb-da9f9556a49e` | owen, ella, sarah | `https://asc.agsv.com` |
-| GXB / sites | `5891fbc9-ef50-46a2-9cad-c7c6221700bf` | sarah, katie (bella if a 3rd) | `https://sites.gxb.vc` |
+| ASC | `asc` | owen Gilleran; ella (ask last); sarah (ask last) | `https://asc.agsv.com` |
+| GXB / sites | `sites` | sarah Genco, katie Bureau (bella if a 3rd) | `https://sites.gxb.vc` |
 
-Last names: real only. Ask. `agsvhq.com` already has invented alex/jordan — leave them.
+One workspace UID for all: `7426e127-ded5-4319-8edb-da9f9556a49e` (named GXB). `agsvhq.com` already has invented alex/jordan — leave them.
 
 Never send from `abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.com`, `abelianhq.com`. No typos. No `*.agsv.com` (DMARC `p=reject`). No `*.gxb.vc` as From (protects the real domain).
 
@@ -113,8 +115,8 @@ Never send from `abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.
 
 1. Re-`check` if the list aged. Substitutes need a new yes.
 2. `cloudflare-cli register DOMAIN --confirm DOMAIN` one at a time. Poll `status` to `succeeded`.
-3. Connect **in the workspace that already owns the CF account (ASC today)**: `inboxkit-cli raw POST /v1/api/cloudflare-domains/connect --workspace 7426e127-ded5-4319-8edb-da9f9556a49e --data '{"auth_type":"api_token","api_token":"<dns token>","connect_all":false,"domains":["example.com"]}'`. 409 = wrong workspace.
-4. Top up credits if remaining < 3×mailboxes (`GET` account). Then `POST /v1/api/mailboxes/buy` with first_name, last_name, email, platform `MICROSOFT`. Buy before connect → `No domains found`.
+3. Confirm the DNS token lists the new zone (`GET /zones` with that token). If not, widen it in the Cloudflare dashboard (All zones) before connect. Then: `inboxkit-cli raw POST /v1/api/cloudflare-domains/connect --workspace 7426e127-ded5-4319-8edb-da9f9556a49e --data '{"auth_type":"api_token","api_token":"<dns token>","connect_all":false,"domains":["example.com"]}'`. Tag `asc` or `sites`. 409 = someone created a second workspace; do not. "Domain not found in your Cloudflare zones" = token still zone-scoped.
+4. Top up if credits remaining < 3×mailboxes: `POST /v1/api/billing/wallet` `{"credits":N,"direct_charge":true}` ($1 = 1 credit, card on file). Then `POST /v1/api/mailboxes/buy` with first_name, last_name, email, platform `MICROSOFT`. Buy before connect → `No domains found`.
 5. Add warmup on those UIDs.
 6. Apex forward to the redirect URL. Verify it stuck (2026-09-06 ASC forward needed a retry).
 7. Creds → `~/.config/inboxkit/<domain>-mailboxes.env` mode 600. No passwords in chat.

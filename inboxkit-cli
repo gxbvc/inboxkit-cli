@@ -211,7 +211,7 @@ def cmd_account(args, cfg)
   puts "Team:       #{data['team']}  (#{data['uid']})"
   puts "Admin:      #{data['admin_email']}"
   puts "Credits:    #{data['credits_remaining']} remaining / #{data['total_credits']} total (#{data['credits_used']} used)"
-  puts "Plan:       #{data['current_plan'] || '(none)'}"
+  puts "Plan:       #{data.dig('current_plan', 'name') || '(none)'}"
   puts "Mailbox slots (google):     #{data['subscription_mailbox_slots_google_remaining']}/#{data['subscription_mailbox_slots_google']}"
   puts "Mailbox slots (ms outlook): #{data['subscription_mailbox_slots_ms_outlook_remaining']}/#{data['subscription_mailbox_slots_ms_outlook']}"
   puts "Auto top-up: #{data['auto_topup_enabled'] ? 'on' : 'off'}"
@@ -340,7 +340,8 @@ def cmd_domains_list(args, cfg)
   end
 
   rows = domains.map do |d|
-    { domain: d['domain'] || d['name'], status: d['status'], mailboxes: d['mailboxes'], created: d['created_at'] }
+    { domain: d['domain'] || d['name'], status: d['status'],
+      mailboxes: "#{d['assigned_mailboxes']}/#{d['available_mailboxes']}", created: d['created_at'] }
   end
 
   render_table(rows, [
@@ -382,7 +383,7 @@ def cmd_mailboxes_list(args, cfg)
   end
 
   rows = mailboxes.map do |m|
-    { email: m['email'], domain: m['domain'], platform: m['platform'], status: m['status'] }
+    { email: "#{m['username']}@#{m['domain_name']}", domain: m['domain_name'], platform: m['platform'], status: m['status'] }
   end
 
   render_table(rows, [

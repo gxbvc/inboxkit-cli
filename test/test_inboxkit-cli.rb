@@ -138,6 +138,23 @@ class InboxkitCliTest < Minitest::Test
     assert_equal 'other-ws', req[:headers]['X-Workspace-Id']
   end
 
+  def test_mailboxes_list_renders_email_from_username_and_domain_name
+    @server.queue_response(200, { mailboxes: [{ username: 'marvinkassulke', domain_name: 'myzyng.net',
+                                                 platform: 'GOOGLE', status: 'active' }],
+                                   total: 1, pages: 1, current_page: 1 }.to_json)
+    out = capture_stdout { cmd_mailboxes_list([], @cfg) }
+    assert_match(/marvinkassulke@myzyng\.net/, out)
+    assert_match(/myzyng\.net/, out)
+  end
+
+  def test_domains_list_renders_mailbox_counts
+    @server.queue_response(200, { domains: [{ name: 'myzyng.net', status: 'active',
+                                               assigned_mailboxes: '2', available_mailboxes: '5' }],
+                                   total: 1, pages: 1, current_page: 1 }.to_json)
+    out = capture_stdout { cmd_domains_list([], @cfg) }
+    assert_match(%r{2/5}, out)
+  end
+
   def test_api_json_401_exits_1
     @server.queue_response(401, { message: 'bad key' }.to_json)
     err = assert_raises(SystemExit) do

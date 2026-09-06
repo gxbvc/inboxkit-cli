@@ -57,58 +57,65 @@ things.
 
 ## Fleet playbook (quote → confirm → buy)
 
-Trigger: Christian says spin up N cold inboxes / lookalike domains for a project.
-Do **not** invent sender names or domain lists and buy them. Quote first. Buy only after he names the domains (or says yes to a printed list).
+Trigger: "spin up cold email for X at N/day". **Quote only** until Christian says yes to the printed list and price.
+
+Quote tools: `cloudflare-cli check`, this file, `inboxkit-cli account`. Do **not** fetch docs.inboxkit.com, do not probe `/v1/api/*`, do not invent names, do not register.
 
 ### Sizing
 
-- 3 Microsoft mailboxes per domain (InboxKit + deliverability).
-- 25 cold sends/mailbox/day (mailer cap is 30).
-- Domains = `ceil(inboxes / 3)`. Add ~30% spare domains only if he asked for a warming pool.
-- `.com` only. Buy on **Cloudflare Registrar** (`cloudflare-cli`), then **connect** to InboxKit. Do not let InboxKit register the domain (double-buy).
-- Nameservers stay on Cloudflare (`carter` / `ines`). Connect with a **Zone DNS** token, not the registrar-only token. Token file: `~/.config/inboxkit/cloudflare-dns.env` (mode 600). Never print it.
+- 25 cold sends/mailbox/day. Mailboxes = `ceil(N / 25)`.
+- **Max 3 Microsoft mailboxes per domain.** Use 2 if volume does not fill 3 (100/day = 4 boxes = 2 domains × 2 names). Christian may ask; answer with that math.
+- Domains = `ceil(mailboxes / names_per_domain)`. Spare warming pool only if he asked.
+- `.com` only. `cloudflare-cli` buys them. InboxKit does **not** register (double-buy).
 
-### Prices (live 2026-09-06)
+### One Cloudflare account = one InboxKit workspace
 
-- Domain: **$10.46/yr** via `cloudflare-cli check` (confirm each batch; max 20 per check).
-- Microsoft mailbox: **3 InboxKit credits** = **$3** one-shot (not the $2.50 marketing number).
-- Warmup: **$3/mailbox/mo**, subscribe after buy; stays `pending_activation` until the box is `active`.
-- SMTP/IMAP 404 until mailbox status is `active` (Microsoft can sit in `processing` / `scheduled` for a while).
+`POST /v1/api/cloudflare-domains/connect` returns **409** if this Cloudflare account is already linked to another workspace. Live: the GXB Cloudflare account is connected to **ASC** (`agsvhq.com`). GXB-workspace connects will 409 until we have a second Cloudflare account or we disconnect ASC (do not disconnect while ASC boxes are provisioning).
 
-Quote line:
+**Until then, new lookalikes attach in the ASC workspace**, even if the campaign is GXB/sites. Flag that in the quote. Connect uses the Zone DNS token in `~/.config/inboxkit/cloudflare-dns.env` (not the registrar token). Never print it.
+
+### Prices (live 2026-09-06; re-check domains)
+
+- Domain **$10.46/yr** (`cloudflare-cli check`, max 20 names).
+- Microsoft mailbox **3 credits = $3** one-shot (not the $2.50 marketing number).
+- Warmup **$3/mailbox/mo**.
+- SMTP/IMAP 404 until mailbox `active` (`processing`/`scheduled` can last hours).
+
+### Quote template (fill and stop)
 
 ```
-N inboxes → D=ceil(N/3) domains
-Year 1 domains: D × $10.46
-InboxKit now: N × $3 credits
-Monthly: N × $3 mailboxes + N × $3 warmup
+Volume: N emails/day
+Mailboxes: ceil(N/25) Microsoft, NAMES_PER_DOMAIN per domain
+Domains: K × $10.46 = $YEAR1  (list them, live-checked)
+InboxKit now: M × $3 credits = $NOW
+Monthly: M×$3 boxes + M×$3 warmup = $MO/mo
+Names: first names only from the table; last names = ask if missing
+Workspace: ASC (CF already connected) unless a second CF account exists
+Redirect: project URL
+Say yes to this list and I will buy.
 ```
 
-Example: 50 inboxes → 17 domains → ~$178 year-1 domains + $150 credits now + ~$300/mo.
+Example 100/day, 2 names: 4 boxes, 2 domains, ~$21 year-1 + $12 credits + $24/mo.
+Example 2500/day, 3 names: 100 boxes, 34 domains, ~$356 year-1 + $300 credits + $600/mo.
 
 ### Names — do not invent
 
-Local-part = real first names at the project. InboxKit also wants a last name: use the real one, or ask.
-
-| Project | Workspace UID | Default first names | Redirect |
+| Project | Workspace UID | First names | Redirect |
 |---|---|---|---|
 | ASC | `7426e127-ded5-4319-8edb-da9f9556a49e` | owen, ella, sarah | `https://asc.agsv.com` |
-| GXB | `5891fbc9-ef50-46a2-9cad-c7c6221700bf` | ask | `https://gxb.vc` |
+| GXB / sites | `5891fbc9-ef50-46a2-9cad-c7c6221700bf` | sarah, katie (bella if a 3rd) | `https://sites.gxb.vc` |
 
-2026-09-06 test on `agsvhq.com` used **alex@ / jordan@** because the agent invented them. Wrong. Next ASC boxes are owen / ella / sarah. Leave alex/jordan; do not rename a live box.
+Last names: real only. Ask. `agsvhq.com` already has invented alex/jordan — leave them.
 
-Never send from brand-protection domains (`abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.com`, `abelianhq.com`) even if they are free. Never use typos (`agsvv.com`). Never use `*.agsv.com` (parent DMARC `p=reject`).
+Never send from `abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.com`, `abelianhq.com`. No typos. No `*.agsv.com` (DMARC `p=reject`). No `*.gxb.vc` as From (protects the real domain).
 
-### Execute (after yes)
+### Execute (after yes to the exact list)
 
-1. `cloudflare-cli check` the exact list. Drop taken names, show the substitute list, wait if the list changed.
+1. Re-`check` if the list aged. Substitutes need a new yes.
 2. `cloudflare-cli register DOMAIN --confirm DOMAIN` one at a time. Poll `status` to `succeeded`.
-3. Connect: `inboxkit-cli raw POST /v1/api/cloudflare-domains/connect --workspace UID --data '{"auth_type":"api_token","api_token":"<dns token>","connect_all":false,"domains":["agsvhq.com"]}'`
-   (`api_token` is required when `auth_type` is `api_token`. Top up wallet first if credits are 0: dashboard billing portal `GET /v1/api/billing/portal` or `POST /v1/api/credits` — probe docs.inboxkit.com `/add-credits-to-wallet-18118396e0`.)
-4. `POST /v1/api/mailboxes/buy` with `mailboxes[].first_name`, `last_name`, `email`, `platform: "MICROSOFT"`. Empty body → `mailboxes is required`. Buy before domain connect → `No domains found`.
-5. `POST` warmup add on those mailbox UIDs.
-6. Apex CNAME/forward to the project URL. The 2026-09-06 forward to asc.agsv.com did not stick — retry and verify.
+3. Connect **in the workspace that already owns the CF account (ASC today)**: `inboxkit-cli raw POST /v1/api/cloudflare-domains/connect --workspace 7426e127-ded5-4319-8edb-da9f9556a49e --data '{"auth_type":"api_token","api_token":"<dns token>","connect_all":false,"domains":["example.com"]}'`. 409 = wrong workspace.
+4. Top up credits if remaining < 3×mailboxes (`GET` account). Then `POST /v1/api/mailboxes/buy` with first_name, last_name, email, platform `MICROSOFT`. Buy before connect → `No domains found`.
+5. Add warmup on those UIDs.
+6. Apex forward to the redirect URL. Verify it stuck (2026-09-06 ASC forward needed a retry).
 7. Creds → `~/.config/inboxkit/<domain>-mailboxes.env` mode 600. No passwords in chat.
-8. Hook to mailer only after status is `active` (SMTP/IMAP or OAuth).
-
-Workspaces: GXB `5891fbc9-ef50-46a2-9cad-c7c6221700bf`, ASC `7426e127-ded5-4319-8edb-da9f9556a49e`. Team GXB, admin `christian@gxb.vc`.
+8. Mailer only after status `active`.

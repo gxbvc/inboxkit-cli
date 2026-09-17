@@ -128,4 +128,5 @@ Never send from `abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.
    `warmup/list` pages shift under you: page 1 + page 2 at limit 100 returned one row twice. Dedupe on `_id` before counting anything.
 6. Apex forward: `POST /v1/api/domains/forwarding` takes **`uids`**, not `domains` (`domains` → 400 `uids is required`). Verify in `domains list`; the response body echoes an empty `forwarding_url` even on success.
 7. Creds → `~/.config/inboxkit/<domain>-mailboxes.env` mode 600. No passwords in chat.
+   `GET /v1/api/mailboxes/:id/credentials` and `GET .../smtp-imap` 404 even when the box is `active`. Set a Microsoft password instead: `POST /v1/api/mailboxes/password` `{"uid":"…","password":"…"}` (needs complexity; a short value returns 500 `Failed to update Microsoft password`). Then store that password in the env file.
 8. Mailer only after status `active`.

@@ -104,8 +104,10 @@ Example 2500/day, 3 names: 100 boxes, 34 domains, ~$356 year-1 + $300 credits + 
 
 | Project | Tag | First / last | Redirect |
 |---|---|---|---|
-| ASC | `asc` | owen Gilleran; ella (ask last); sarah (ask last) | `https://asc.agsv.com` |
+| ASC | `asc` | owen Davies, ella Carver, fred Addy | `https://asc.agsv.com` |
 | GXB / sites | `sites` | sarah Genco, katie Bureau (bella if a 3rd) | `https://sites.gxb.vc` |
+| Trigg (theater) | untagged (connect rejects `tag`) | gabrielle Castro, trigg Watson | `https://triggmagic.com` |
+| Trigate | untagged (connect rejects `tag`) | marissa Bennett, julie Benoist, amy Xu | `https://trigatecapital.com` |
 
 One workspace UID for all: `7426e127-ded5-4319-8edb-da9f9556a49e` (named GXB). `agsvhq.com` already has invented alex/jordan — leave them.
 
@@ -116,8 +118,14 @@ Never send from `abeliansecurity.com`, `abeliancouncil.com`, `abeliancollective.
 1. Re-`check` if the list aged. Substitutes need a new yes.
 2. `cloudflare-cli register DOMAIN --confirm DOMAIN` one at a time. Poll `status` to `succeeded`.
 3. Confirm the DNS token lists the new zone (`GET /zones` with that token). If not, widen it in the Cloudflare dashboard (All zones) before connect. Then: `inboxkit-cli raw POST /v1/api/cloudflare-domains/connect --workspace 7426e127-ded5-4319-8edb-da9f9556a49e --data '{"auth_type":"api_token","api_token":"<dns token>","connect_all":false,"domains":["example.com"]}'`. Tag `asc` or `sites`. 409 = someone created a second workspace; do not. "Domain not found in your Cloudflare zones" = token still zone-scoped.
-4. Top up if credits remaining < 3×mailboxes: `POST /v1/api/billing/wallet` `{"credits":N,"direct_charge":true}` ($1 = 1 credit, card on file). Then `POST /v1/api/mailboxes/buy` with first_name, last_name, email, platform `MICROSOFT`. Buy before connect → `No domains found`.
-5. Add warmup on those UIDs.
-6. Apex forward to the redirect URL. Verify it stuck (2026-09-06 ASC forward needed a retry).
+4. Top up if credits remaining < 3×mailboxes: `POST /v1/api/billing/wallet` `{"credits":N,"direct_charge":true}` ($1 = 1 credit, card on file). **Fund boxes *and* the warmup month in one charge (6 credits/box).** 2026-09-07 a second $300 top-up five minutes after the first came back `402 Your card was declined` — issuer velocity block, not a bad card. Do not retry a decline in a loop; ask Christian to clear it. Then `POST /v1/api/mailboxes/buy` with `mailboxes[]` of first_name, last_name, **`username`** (local part, not `email`), `domain_name`, platform `MICROSOFT`, plus top-level `use_wallet_balance: true`. Buy before connect → `No domains found`.
+5. `POST /v1/api/warmup/add` `{"mailbox_uids":[…],"activate_immediately":true}`. It returns `pending_activation` (trigger `mailbox_active`) and bills from the wallet when the box goes active, so leave ~$3/box of credit in there.
+
+   **`warmup/add` is async and WILL `Net::ReadTimeout` on any batch worth sending. A timeout does not mean failure — the server keeps creating subscriptions for minutes afterward.** Never re-derive "what's still missing" from `warmup/list` right after a timeout: the snapshot is stale and re-sending duplicates the subscription, at $3/mo each. 2026-09-07 that turned 100 boxes into 190 subscriptions and drained a $300 wallet to zero. Fire the add ONCE for all uids, then poll `POST /v1/api/warmup/list` `{"page":1,"limit":1}` on `total` every 45s until it stops moving (took ~5 min for 100), and only then reconcile.
+
+   Reconcile with `POST /v1/api/warmup/cancel` `{"mailbox_uids":[…]}` — it keys on **mailbox uid, not subscription id**, and cancels exactly ONE subscription per uid per call, so a box with 3 subs needs 2 rounds. Cancel is async too: poll `total` to stable again before re-measuring. Target end state is `total` == mailboxes + pre-existing subs, one `active` sub each.
+
+   `warmup/list` pages shift under you: page 1 + page 2 at limit 100 returned one row twice. Dedupe on `_id` before counting anything.
+6. Apex forward: `POST /v1/api/domains/forwarding` takes **`uids`**, not `domains` (`domains` → 400 `uids is required`). Verify in `domains list`; the response body echoes an empty `forwarding_url` even on success.
 7. Creds → `~/.config/inboxkit/<domain>-mailboxes.env` mode 600. No passwords in chat.
 8. Mailer only after status `active`.

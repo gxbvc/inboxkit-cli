@@ -2,6 +2,10 @@
 
 CLI for InboxKit (app.inboxkit.com) — cold email infra: domains, mailboxes, warmup, workspaces.
 
+## RULE: sender names (Oct 14, 2026, Christian)
+
+A mailbox sender name must be a **real person who agreed in writing** to be used as a sender. Never use a client employee's name without that person's written consent. Never invent a persona for a client. If a name is not in the table below as approved, stop and ask Christian. (Why: warm-up ran under a real TriGate employee's name from Sep 17 without her consent; it is paused.)
+
 ## Config
 
 Path: `~/.config/inboxkit/.env` (mode 600, `KEY=VALUE` lines)
@@ -107,7 +111,7 @@ Example 2500/day, 3 names: 100 boxes, 34 domains, ~$356 year-1 + $300 credits + 
 | ASC | `asc` | owen Davies, ella Carver, fred Addy | `https://asc.agsv.com` |
 | GXB / sites | `sites` | sarah Genco, katie Bureau (bella if a 3rd) | `https://sites.gxb.vc` |
 | Trigg (theater) | untagged (connect rejects `tag`) | gabrielle Castro, trigg Watson | `https://triggmagic.com` |
-| Trigate | untagged (connect rejects `tag`) | marissa Bennett, julie Benoist, amy Xu | `https://trigatecapital.com` |
+| Trigate | untagged (connect rejects `tag`) | **ON HOLD, do not create or warm up; Christian decides in #1367** (no sender names are approved) | `https://trigatecapital.com` |
 
 One workspace UID for all: `7426e127-ded5-4319-8edb-da9f9556a49e` (named GXB). `agsvhq.com` already has invented alex/jordan — leave them.
 
